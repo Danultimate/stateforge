@@ -17,11 +17,24 @@ jobs:
   test:
     name: tests (py${{ matrix.python-version }} / ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # Bound a runaway hang: tests run in <1s locally; 10 min is generous.
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
         os: [ubuntu-latest, macos-latest]
+
+    env:
+      # langchain-core pulls in the langsmith pytest plugin which auto-loads
+      # and can phone home on test collection / teardown. We don't want that
+      # in CI — disable autoload entirely and re-enable only pytest-asyncio.
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+      # Belt and suspenders: tell LangSmith / LangChain not to phone home
+      # even if some path slips past the plugin disable.
+      LANGSMITH_TRACING: "false"
+      LANGSMITH_OTEL_ENABLED: "false"
+      LANGCHAIN_TRACING_V2: "false"
 
     steps:
       - name: Checkout
@@ -46,4 +59,7 @@ jobs:
           python -c "import langchain_core, langgraph; print('lc/lg OK')"
 
       - name: Run tests
-        run: pytest -q --no-header
+        # Explicitly enable only pytest-asyncio (autoload is disabled above).
+        # -v + --tb=short so a hung or failing test is visible in the log
+        # instead of buffered until the end.
+        run: pytest -v --tb=short --no-header -p pytest_asyncio.plugin
