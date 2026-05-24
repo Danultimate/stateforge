@@ -5,7 +5,7 @@
 
 Agent memory is mutable, opaque, and ephemeral by default. StateForge makes it versioned, inspectable, and reproducible. Every memory unit is written once, never mutated, and addressable forever. Every snapshot is an immutable set of references to those units. You can always answer: *what did this agent know, when did it know it, and where did that knowledge come from.*
 
-[![tests](https://img.shields.io/badge/tests-265%20passing-brightgreen)](./tests) [![python](https://img.shields.io/badge/python-3.11%2B-blue)](pyproject.toml) [![license](https://img.shields.io/badge/license-MIT-blue)](#license)
+[![CI](https://github.com/Danultimate/stateforge/actions/workflows/ci.yml/badge.svg)](https://github.com/Danultimate/stateforge/actions/workflows/ci.yml) [![python](https://img.shields.io/badge/python-3.11%2B-blue)](pyproject.toml) [![license](https://img.shields.io/badge/license-MIT-blue)](#license)
 
 ---
 
