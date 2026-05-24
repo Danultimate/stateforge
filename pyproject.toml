@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "stateforge-llm"
+version = "0.4.1"
+description = "Versioned memory and state management for AI agents. Git-like history over event-sourced memory units."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Daniel Blanco" }]
+keywords = ["llm", "agents", "memory", "versioning", "snapshot", "provenance"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "aiosqlite>=0.19",
+    "typer>=0.12",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+langchain  = ["langchain-core>=0.2"]
+langgraph  = ["langgraph>=0.1"]
+encryption = ["sqlcipher3>=0.6"]
+dev        = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+stateforge = "stateforge.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/Danultimate/stateforge-llm"
+
+[tool.hatch.build.targets.wheel]
+packages = ["stateforge"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
