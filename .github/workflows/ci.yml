@@ -58,13 +58,30 @@ jobs:
           python -c "import sqlcipher3; print('sqlcipher3 OK')"
           python -c "import langchain_core, langgraph; print('lc/lg OK')"
 
-      - name: Run tests
-        # Explicitly enable pytest-asyncio + pytest-timeout (autoload is off).
-        # -v + --tb=short so a hung or failing test name surfaces live.
-        # --timeout=20 with --timeout-method=thread kills any individual test
-        # exceeding 20s and dumps a Python-level traceback showing exactly
-        # where it's stuck — works even for async / asyncio.to_thread blocks.
+      # ─── Diagnostic split ────────────────────────────────────────────
+      # We've seen the test phase hang past the job timeout twice with no
+      # individual-test-timeout traceback firing. That means pytest never
+      # reached a test (or stalled inside the very first one). Split the
+      # phases so we can see exactly which boundary the hang lives at.
+      - name: Pytest version + plugin set
+        run: pytest --version
+
+      - name: Collect only (import + collection check)
+        timeout-minutes: 2
+        run: pytest --collect-only -q --no-header
+
+      - name: Run non-adapter tests
+        timeout-minutes: 4
         run: |
-          pytest -v --tb=short --no-header \
-            --timeout=20 --timeout-method=thread \
+          pytest tests/ --ignore=tests/adapters \
+            -v --tb=short --no-header \
+            --timeout=15 --timeout-method=thread \
+            -p pytest_asyncio.plugin -p pytest_timeout
+
+      - name: Run adapter tests
+        timeout-minutes: 4
+        run: |
+          pytest tests/adapters \
+            -v --tb=short --no-header \
+            --timeout=15 --timeout-method=thread \
             -p pytest_asyncio.plugin -p pytest_timeout
