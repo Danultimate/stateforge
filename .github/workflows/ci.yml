@@ -59,7 +59,12 @@ jobs:
           python -c "import langchain_core, langgraph; print('lc/lg OK')"
 
       - name: Run tests
-        # Explicitly enable only pytest-asyncio (autoload is disabled above).
-        # -v + --tb=short so a hung or failing test is visible in the log
-        # instead of buffered until the end.
-        run: pytest -v --tb=short --no-header -p pytest_asyncio.plugin
+        # Explicitly enable pytest-asyncio + pytest-timeout (autoload is off).
+        # -v + --tb=short so a hung or failing test name surfaces live.
+        # --timeout=20 with --timeout-method=thread kills any individual test
+        # exceeding 20s and dumps a Python-level traceback showing exactly
+        # where it's stuck — works even for async / asyncio.to_thread blocks.
+        run: |
+          pytest -v --tb=short --no-header \
+            --timeout=20 --timeout-method=thread \
+            -p pytest_asyncio.plugin -p pytest_timeout
