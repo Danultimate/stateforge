@@ -73,15 +73,36 @@ jobs:
       - name: Run non-adapter tests
         timeout-minutes: 4
         run: |
+          set -o pipefail
+          mkdir -p logs
+          # -s disables output capture so test-internal prints appear live.
+          # --timeout=10 is tighter than before; if pytest-timeout still
+          # doesn't fire, the test isn't getting interrupted at the Python
+          # level (probably blocked in C / a sqlite call). The log file
+          # captures stdout regardless so the artifact upload preserves it.
           pytest tests/ --ignore=tests/adapters \
-            -v --tb=short --no-header \
-            --timeout=15 --timeout-method=thread \
-            -p pytest_asyncio.plugin -p pytest_timeout
+            -v -s --tb=short --no-header \
+            --timeout=10 --timeout-method=thread \
+            -p pytest_asyncio.plugin -p pytest_timeout \
+            2>&1 | tee logs/pytest-non-adapter.log
 
       - name: Run adapter tests
+        if: success() || failure()
         timeout-minutes: 4
         run: |
+          set -o pipefail
+          mkdir -p logs
           pytest tests/adapters \
-            -v --tb=short --no-header \
-            --timeout=15 --timeout-method=thread \
-            -p pytest_asyncio.plugin -p pytest_timeout
+            -v -s --tb=short --no-header \
+            --timeout=10 --timeout-method=thread \
+            -p pytest_asyncio.plugin -p pytest_timeout \
+            2>&1 | tee logs/pytest-adapter.log
+
+      - name: Upload pytest logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-logs-py${{ matrix.python-version }}-${{ matrix.os }}
+          path: logs/
+          if-no-files-found: warn
+          retention-days: 14
