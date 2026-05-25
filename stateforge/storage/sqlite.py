@@ -339,45 +339,60 @@ class SQLiteBackend(StorageBackend):
 
         await self._conn.open()
 
-        # 1. PRAGMA key MUST precede every other statement, including journal_mode.
-        if self._key is not None:
-            await self._conn.execute(f"PRAGMA key = {self._key.pragma_value()}")
-            # 2. Probe an existing DB to catch wrong/missing/extraneous-key cases.
-            #    A fresh DB has no schema yet; the probe would always return 0.
-            if pre_existing:
-                try:
-                    await self._conn.fetchone(
-                        "SELECT count(*) FROM sqlite_master"
-                    )
-                except Exception as e:  # SQLCipher raises DatabaseError
-                    await self._conn.close()
-                    raise EncryptionKeyError(
-                        "failed to open encrypted DB — wrong key, missing key, "
-                        f"or a key was supplied for an unencrypted DB: {e}"
-                    ) from e
+        # If ANY step below fails, the connection (and its worker thread) must
+        # be closed before the exception propagates. Otherwise aiosqlite leaves
+        # a non-daemon thread alive that blocks Python interpreter exit — which
+        # manifests as a multi-minute hang at process teardown (the entire
+        # test suite finishes in <2s but the process won't exit, blocking CI).
+        try:
+            # 1. PRAGMA key MUST precede every other statement, including journal_mode.
+            if self._key is not None:
+                await self._conn.execute(f"PRAGMA key = {self._key.pragma_value()}")
+                # 2. Probe an existing DB to catch wrong/missing/extraneous-key cases.
+                #    A fresh DB has no schema yet; the probe would always return 0.
+                if pre_existing:
+                    try:
+                        await self._conn.fetchone(
+                            "SELECT count(*) FROM sqlite_master"
+                        )
+                    except Exception as e:  # SQLCipher raises DatabaseError
+                        raise EncryptionKeyError(
+                            "failed to open encrypted DB — wrong key, missing key, "
+                            f"or a key was supplied for an unencrypted DB: {e}"
+                        ) from e
 
-        # 3. Standard PRAGMAs (overridable except for journal_mode/key).
-        await self._conn.execute("PRAGMA journal_mode = WAL")
-        await self._conn.execute(
-            f"PRAGMA busy_timeout = {self._pragmas.get('busy_timeout', '5000')}"
-        )
-        await self._conn.execute(
-            f"PRAGMA synchronous = {self._pragmas.get('synchronous', 'NORMAL')}"
-        )
-        await self._conn.execute(
-            f"PRAGMA foreign_keys = {self._pragmas.get('foreign_keys', 'ON')}"
-        )
+            # 3. Standard PRAGMAs (overridable except for journal_mode/key).
+            await self._conn.execute("PRAGMA journal_mode = WAL")
+            await self._conn.execute(
+                f"PRAGMA busy_timeout = {self._pragmas.get('busy_timeout', '5000')}"
+            )
+            await self._conn.execute(
+                f"PRAGMA synchronous = {self._pragmas.get('synchronous', 'NORMAL')}"
+            )
+            await self._conn.execute(
+                f"PRAGMA foreign_keys = {self._pragmas.get('foreign_keys', 'ON')}"
+            )
 
-        # 4. Migrations under BEGIN IMMEDIATE — idempotent CREATE … IF NOT EXISTS.
-        async with self._conn.transaction():
-            for stmt in _SCHEMA:
-                await self._conn.execute(stmt)
+            # 4. Migrations under BEGIN IMMEDIATE — idempotent CREATE … IF NOT EXISTS.
+            async with self._conn.transaction():
+                for stmt in _SCHEMA:
+                    await self._conn.execute(stmt)
+        except BaseException:
+            # Best-effort close so the worker thread terminates and the process
+            # can exit cleanly. Swallow any close error — the original
+            # exception is what the caller cares about.
+            try:
+                await self._conn.close()
+            except Exception:
+                pass
+            raise
 
         self._initialized = True
 
     async def close(self) -> None:
-        if not self._initialized:
-            return
+        # Close even if initialize() never completed — the connection may have
+        # been opened before the failing step, and its worker thread will
+        # otherwise keep the process alive at exit.
         await self._conn.close()
         self._initialized = False
 
