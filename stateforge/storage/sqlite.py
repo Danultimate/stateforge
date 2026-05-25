@@ -9,6 +9,7 @@ Both expose the same async surface through the internal :class:`_AsyncConn`.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import json
 import os
@@ -143,6 +144,12 @@ class _AsyncConn:
         self._key = key
         self._aio: aiosqlite.Connection | None = None
         self._cipher: Any | None = None  # sqlcipher3 sync connection
+        # Dedicated single-worker executor for the sqlcipher connection so that
+        # every operation runs on the same OS thread — sqlite3/sqlcipher3
+        # enforces check_same_thread=True by default, and the default asyncio
+        # executor has multiple workers that violate this (the failure manifests
+        # on Linux runners where the pool ramps up to multiple threads quickly).
+        self._cipher_executor: concurrent.futures.ThreadPoolExecutor | None = None
         self._stmt_lock = asyncio.Lock()  # serialize sqlcipher per-statement ops
         self._txn_lock = asyncio.Lock()   # serialize BEGIN..COMMIT sequences
 
@@ -169,6 +176,11 @@ class _AsyncConn:
     def encrypted(self) -> bool:
         return self._key is not None
 
+    async def _cipher_call(self, func, *args):
+        """Run ``func(*args)`` on the dedicated sqlcipher worker thread."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._cipher_executor, func, *args)
+
     async def open(self) -> None:
         if self._key is None:
             self._aio = await aiosqlite.connect(self._path)
@@ -178,27 +190,43 @@ class _AsyncConn:
             require_sqlcipher()
             import sqlcipher3  # type: ignore[import-not-found]
 
+            # Pin all sqlcipher operations to one thread. sqlite3/sqlcipher3
+            # enforces check_same_thread=True and would otherwise raise
+            # ProgrammingError when the default executor hands subsequent ops
+            # to a different worker thread.
+            self._cipher_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="stateforge-sqlcipher"
+            )
+
             def _connect() -> Any:
                 conn = sqlcipher3.dbapi2.connect(self._path)
                 conn.isolation_level = None  # we manage txns explicitly
                 return conn
 
-            self._cipher = await asyncio.to_thread(_connect)
+            self._cipher = await self._cipher_call(_connect)
 
     async def close(self) -> None:
         if self._aio is not None:
             await self._aio.close()
             self._aio = None
         if self._cipher is not None:
-            await asyncio.to_thread(self._cipher.close)
-            self._cipher = None
+            try:
+                await self._cipher_call(self._cipher.close)
+            finally:
+                self._cipher = None
+        if self._cipher_executor is not None:
+            # shutdown(wait=True) lets the single worker finalize and exit
+            # before we drop the reference — necessary so the process exits
+            # cleanly at the end of the test session.
+            self._cipher_executor.shutdown(wait=True)
+            self._cipher_executor = None
 
     async def execute(self, sql: str, params: tuple = ()) -> None:
         if self._aio is not None:
             await self._aio.execute(sql, params)
             return
         async with self._stmt_lock:
-            await asyncio.to_thread(self._cipher.execute, sql, params)  # type: ignore[union-attr]
+            await self._cipher_call(self._cipher.execute, sql, params)  # type: ignore[union-attr]
 
     async def executemany(self, sql: str, params_list: Iterable[tuple]) -> None:
         params_list = list(params_list)
@@ -208,7 +236,7 @@ class _AsyncConn:
             await self._aio.executemany(sql, params_list)
             return
         async with self._stmt_lock:
-            await asyncio.to_thread(
+            await self._cipher_call(
                 self._cipher.executemany, sql, params_list  # type: ignore[union-attr]
             )
 
@@ -220,7 +248,7 @@ class _AsyncConn:
             def _run() -> list[tuple]:
                 cur = self._cipher.execute(sql, params)  # type: ignore[union-attr]
                 return list(cur.fetchall())
-            return await asyncio.to_thread(_run)
+            return await self._cipher_call(_run)
 
     async def fetchone(self, sql: str, params: tuple = ()) -> tuple | None:
         if self._aio is not None:
@@ -230,21 +258,21 @@ class _AsyncConn:
             def _run() -> tuple | None:
                 cur = self._cipher.execute(sql, params)  # type: ignore[union-attr]
                 return cur.fetchone()
-            return await asyncio.to_thread(_run)
+            return await self._cipher_call(_run)
 
     async def commit(self) -> None:
         if self._aio is not None:
             await self._aio.commit()
             return
         async with self._stmt_lock:
-            await asyncio.to_thread(self._cipher.commit)  # type: ignore[union-attr]
+            await self._cipher_call(self._cipher.commit)  # type: ignore[union-attr]
 
     async def rollback(self) -> None:
         if self._aio is not None:
             await self._aio.rollback()
             return
         async with self._stmt_lock:
-            await asyncio.to_thread(self._cipher.rollback)  # type: ignore[union-attr]
+            await self._cipher_call(self._cipher.rollback)  # type: ignore[union-attr]
 
 
 # ────────────────────────────────────────────────────────────────────────────
